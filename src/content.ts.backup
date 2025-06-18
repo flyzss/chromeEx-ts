@@ -1,0 +1,362 @@
+// content.ts
+// 该脚本在匹配的网页上下文中运行，负责与页面DOM交互和网络请求监听。
+
+import { ClickButtonMessage, NetworkResponseData } from './types';
+
+// console.log('内容脚本已加载。'); // 用于调试，确认脚本注入
+
+// 定义要监听的URL模式
+let listenUrlPattern: RegExp | null = null;
+
+// 存储原始的fetch和XMLHttpRequest方法
+const originalFetch = window.fetch;
+const originalXhrOpen = XMLHttpRequest.prototype.open;
+const originalXhrSend = XMLHttpRequest.prototype.send;
+
+// 存储配置信息
+let urlFilterPattern: RegExp | null = null;
+
+/**
+ * 监听来自 background.js 的消息，主要处理点击页面元素的指令
+ */
+function setupMessageListener(): void {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.command === 'clickButton') {
+      // 查找按钮并点击
+      const button = document.querySelector(message.selector) as HTMLElement;
+      if (button) {
+        button.click();
+        sendResponse({ command: 'clickResult', success: true });
+      } else {
+        sendResponse({ command: 'clickResult', success: false, error: '未找到按钮' });
+      }
+    }
+    return true; // 保持消息通道开放以进行异步响应
+  });
+}
+
+/**
+ * 从background script获取配置
+ * @returns 配置对象的Promise
+ */
+function getConfigFromBackground(): Promise<{listenUrl?: string, [key: string]: any}> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ command: 'getConfig' }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else if (response && response.config) {
+        resolve(response.config);
+      } else {
+        reject(new Error('未能获取有效的配置'));
+      }
+    });
+  });
+}
+
+/**
+ * 初始化网络请求监听配置
+ */
+function initNetworkListening(): void {
+  // 从background获取配置
+  chrome.runtime.sendMessage({ command: 'getConfig' }, (response) => {
+    if (response && response.config && response.config.listenUrl) {
+      // 将通配符转换为正则表达式
+      const pattern = response.config.listenUrl.replace(/\*/g, '.*');
+      listenUrlPattern = new RegExp(pattern);
+    }
+  });
+}
+
+/**
+ * 检查URL是否匹配监听模式
+ * @param url 要检查的URL
+ * @returns 是否匹配
+ */
+function shouldCaptureRequest(url: string): boolean {
+  if (!listenUrlPattern) return false;
+  return listenUrlPattern.test(url);
+}
+
+/**
+ * 发送网络请求数据到background
+ * @param data 捕获的网络响应数据
+ */
+function sendNetworkData(data: NetworkResponseData): void {
+  chrome.runtime.sendMessage({
+    command: 'networkRequestCaptured',
+    data
+  });
+}
+
+/**
+ * 实现 fetch API 的钩子
+ */
+function setupFetchHook(): void {
+  window.fetch = async function(...args) {
+    // 获取URL和请求选项
+    let url: string;
+    if (typeof args[0] === 'string') {
+      url = args[0];
+    } else if (args[0] instanceof URL) {
+      url = args[0].href;
+    } else if (args[0] instanceof Request) {
+      url = args[0].url;
+    } else {
+      // 无法确定URL，跳过监控
+      return originalFetch.apply(this, args);
+    }
+    const options = args[1] || {};
+    const method = options.method || 'GET';
+    
+    // 检查是否应该监听这个请求
+    const shouldCapture = url && shouldCaptureRequest(url);
+    let requestBody: string | undefined;
+    
+    // 如果有请求体，尝试获取
+    if (shouldCapture && options.body) {
+      try {
+        requestBody = typeof options.body === 'string' 
+          ? options.body 
+          : JSON.stringify(options.body);
+      } catch (e) {
+        // 如果无法序列化请求体，忽略它
+      }
+    }
+    
+    // 调用原始fetch方法
+    try {
+      const response = await originalFetch.apply(this, args);
+      
+      // 如果不需要捕获，直接返回响应
+      if (!shouldCapture) {
+        return response;
+      }
+      
+      // 克隆响应以便于读取响应体
+      const clonedResponse = response.clone();
+      
+      // 异步处理响应
+      clonedResponse.text().then(responseBody => {
+        try {
+          // 获取响应头信息
+          const headers: Record<string, string> = {};
+          clonedResponse.headers.forEach((value, key) => {
+            headers[key] = value;
+          });
+          
+          // 创建网络响应数据对象
+          const networkData: NetworkResponseData = {
+            url,
+            method,
+            status: clonedResponse.status,
+            responseHeaders: headers,
+            responseBody,
+            requestBody,
+            contentType: headers['content-type'] || '',
+            timestamp: new Date().toISOString()
+          };
+          
+          // 发送数据到background
+          sendNetworkData(networkData);
+        } catch (error) {
+          console.error('处理响应时出错:', error);
+        }
+      }).catch(error => {
+        console.error('读取响应体时出错:', error);
+      });
+      
+      // 返回原始响应
+      return response;
+    } catch (error) {
+      // 如果fetch失败，仍然抛出错误
+      throw error;
+    }
+  };
+}
+
+/**
+ * 实现 XMLHttpRequest 的钩子
+ */
+function setupXhrHook(): void {
+  // 保存XHR请求的信息
+  const xhrMap = new Map<XMLHttpRequest, {
+    url: string;
+    method: string;
+    requestBody?: string;
+  }>();
+  
+  // 钩住open方法以捕获URL和方法
+  XMLHttpRequest.prototype.open = function(method: string, url: string | URL, async: boolean = true, username?: string | null, password?: string | null) {
+    // 保存请求信息
+    const urlString = url instanceof URL ? url.href : url;
+    xhrMap.set(this, { url: urlString, method });
+    
+    // 调用原始open方法
+    return originalXhrOpen.call(this, method, url, async, username, password);
+  };
+  
+  // 钩住send方法以捕获请求体
+  XMLHttpRequest.prototype.send = function(body?: Document | XMLHttpRequestBodyInit | null) {
+    const xhrInfo = xhrMap.get(this);
+    
+    if (xhrInfo && body) {
+      try {
+        if (typeof body === 'string') {
+          xhrInfo.requestBody = body;
+        } else if (body instanceof FormData || body instanceof URLSearchParams) {
+          // FormData和URLSearchParams无法直接序列化，跳过
+          xhrInfo.requestBody = '[FormData或URLSearchParams对象]';
+        } else if (body instanceof Blob || body instanceof ArrayBuffer) {
+          xhrInfo.requestBody = '[二进制数据]';
+        } else {
+          // 尝试JSON序列化
+          xhrInfo.requestBody = JSON.stringify(body);
+        }
+      } catch (e) {
+        // 忽略无法序列化的请求体
+      }
+    }
+    
+    // 如果需要监听这个请求
+    if (xhrInfo && shouldCaptureRequest(xhrInfo.url)) {
+      // 添加加载完成的监听器
+      this.addEventListener('load', function() {
+        try {
+          // 获取响应信息
+          const status = this.status;
+          const responseHeaders: Record<string, string> = {};
+          const headersText = this.getAllResponseHeaders();
+          
+          // 解析响应头
+          headersText.split('\r\n').forEach(line => {
+            if (!line) return;
+            const parts = line.split(': ');
+            const key = parts.shift() || '';
+            const value = parts.join(': ');
+            if (key) responseHeaders[key] = value;
+          });
+          
+          // 检查是否匹配过滤模式
+          if (!urlFilterPattern || urlFilterPattern.test(xhrInfo.url)) {
+            const capturedData = {
+              url: xhrInfo.url,
+              method: xhrInfo.method,
+              status,
+              responseHeaders,
+              responseBody: this.responseText,
+              requestBody: xhrInfo.requestBody,
+              contentType: this.getResponseHeader('Content-Type') || '',
+              timestamp: new Date().toISOString()
+            };
+            
+            // 发送数据到background
+            sendNetworkData(capturedData);
+          } else {
+            console.debug('[ST Extension] URL不匹配过滤模式，已跳过:', xhrInfo.url);
+          }
+        } catch (error) {
+          console.error('处理XHR响应时出错:', error);
+        }
+      });
+    }
+    
+    // 调用原始send方法
+    return originalXhrSend.call(this, body);
+  };
+}
+
+// 初始化消息监听
+setupMessageListener();
+
+// 从background script获取配置
+getConfigFromBackground()
+  .then((config: {listenUrl?: string, [key: string]: any}) => {
+    if (config && config.listenUrl) {
+      // 将监听URL模式转换为正则表达式
+      urlFilterPattern = new RegExp(config.listenUrl.replace(/\*/g, '.*'));
+      
+      // 配置获取成功后设置钩子
+      setupFetchHook();
+      setupXhrHook();
+      
+      console.log('[ST Extension] 网络请求监听启动，过滤模式：', config.listenUrl);
+    } else {
+      // 未配置监听URL，不启用监听
+      console.log('[ST Extension] 未配置监听URL，不启用网络请求监听');
+    }
+  })
+  .catch((error: Error) => {
+    console.error('[ST Extension] 获取配置失败：', error);
+  });
+
+/**
+ * 监听来自 background.js 的消息，主要处理点击页面元素的指令
+ * @param message - 消息对象，包含command和selector等信息
+ * @param sender - 消息发送方信息
+ * @param sendResponse - 回调函数，用于向发送方发送响应
+ * @returns 如果是异步处理则返回true，否则返回false
+ */
+// 监听来自 background.js 的消息
+// 消息监听器，用于处理来自background的消息
+chrome.runtime.onMessage.addListener((
+  message: unknown, 
+  sender: chrome.runtime.MessageSender, 
+  sendResponse: (response?: any) => void
+) => {
+  // 类型检查和类型断言
+  if (!message || typeof message !== 'object' || !('command' in message)) {
+    return false;
+  }
+
+  const typedMessage = message as ClickButtonMessage;
+  
+  // 检查消息命令是否为 'clickButton'
+  if (typedMessage.command === 'clickButton') {
+    // 获取按钮选择器
+    const selector = typedMessage.selector;
+    // console.log(`内容脚本收到点击指令，选择器: ${selector}`); // 调试日志
+
+    // 检查选择器是否为空
+    if (!selector) {
+      // console.error('错误: 选择器为空。'); // 调试日志
+      sendResponse({ success: false, error: '选择器为空' }); // 发送失败响应
+      return true; // 表示异步处理响应
+    }
+
+    try {
+      // 尝试使用 querySelector 查找按钮
+      let button: Element | null = document.querySelector(selector);
+      // 如果 querySelector 未找到，并且选择器可能为 XPath，则尝试使用 XPath
+      // (这是一个简化的XPath检测，实际应用中可能需要更明确的指示或更健壮的解析)
+      if (!button && (selector.startsWith('/') || selector.startsWith('./') || selector.startsWith('('))) {
+        // console.log('尝试使用 XPath 定位按钮...'); // 调试日志
+        const xpathResult = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        button = xpathResult.singleNodeValue as Element;
+      }
+
+      // 检查按钮是否存在且可见
+      if (button && (button instanceof HTMLElement)) {
+        // console.log('按钮已找到:', button); // 调试日志
+        // 检查按钮是否可见且可点击 (简单的可见性检查)
+        const style = window.getComputedStyle(button);
+        if (style.display === 'none' || style.visibility === 'hidden' || button.disabled) {
+          // console.warn('警告: 按钮已找到但不可见或被禁用。', button); // 调试日志
+          sendResponse({ success: false, error: '按钮已找到但不可见或被禁用' });
+        } else {
+          button.click(); // 执行点击操作
+          // console.log('按钮已点击。'); // 调试日志
+          sendResponse({ success: true }); // 发送成功响应
+        }
+      } else {
+        // console.error('错误: 未找到匹配选择器的按钮或找到的不是元素。', selector); // 调试日志
+        sendResponse({ success: false, error: '未找到匹配选择器的按钮' }); // 发送失败响应
+      }
+    } catch (e) {
+      const error = e as Error;
+      // console.error('点击按钮时发生错误:', e); // 调试日志
+      sendResponse({ success: false, error: error.message }); // 发送错误响应
+    }
+    return true; // 表示异步处理响应，因为DOM操作和响应发送可能是异步的
+  }
+  return false; // 对于其他类型的消息，不作处理或同步处理
+});
