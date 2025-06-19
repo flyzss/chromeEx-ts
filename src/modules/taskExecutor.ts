@@ -6,13 +6,24 @@ import { Config, ClickButtonMessage } from '../types';
 
 /**
  * 执行预定任务的函数，主要负责点击按钮和处理网络请求
+ * @param buttonType 按钮类型，'query'表示查询按钮，'nextPage'表示下一页按钮
  * @returns Promise对象
  */
-export async function performScheduledTask(): Promise<void> {
+export async function performScheduledTask(buttonType: 'query' | 'nextPage' = 'query'): Promise<void> {
   // 检查任务是否仍在运行且配置有效
-  if (!isRunning || !currentConfig || !currentConfig.buttonSelector) {
-    logToPopup(`任务未运行或配置不完整，跳过执行。isRunning: ${isRunning}, buttonSelector: ${currentConfig.buttonSelector}`);
+  if (!isRunning || !currentConfig) {
+    logToPopup(`任务未运行或配置不完整，跳过执行。isRunning: ${isRunning}`);
     return; // 如果任务已停止或配置不完整，则不执行
+  }
+  
+  // 根据按钮类型选择相应的选择器
+  const selector = buttonType === 'query' 
+    ? (currentConfig.queryButtonSelector || currentConfig.buttonSelector) // 兼容旧配置
+    : (currentConfig.nextPageButtonSelector || currentConfig.buttonSelector); // 兼容旧配置
+    
+  if (!selector) {
+    logToPopup(`${buttonType === 'query' ? '查询' : '下一页'}按钮选择器未配置，跳过执行。`);
+    return;
   }
 
   // 1. 指令内容脚本点击按钮
@@ -44,11 +55,13 @@ export async function performScheduledTask(): Promise<void> {
       // 重新获取一次 activeTab，因为导航后 tab 对象可能变化
       const [currentActiveTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (currentActiveTab && currentActiveTab.id) {
-        logToPopup(`向内容脚本发送点击指令: ${currentConfig.buttonSelector}`);
+        const buttonTypeText = buttonType === 'query' ? '查询按钮' : '下一页按钮';
+        logToPopup(`向内容脚本发送${buttonTypeText}点击指令: ${selector}`);
         // 向内容脚本发送消息，要求点击按钮
         const message: ClickButtonMessage = {
           command: 'clickButton',
-          selector: currentConfig.buttonSelector
+          selector: selector,
+          buttonType: buttonType // 添加按钮类型信息供内容脚本使用
         };
         
         chrome.tabs.sendMessage(
@@ -59,9 +72,9 @@ export async function performScheduledTask(): Promise<void> {
               logToPopup(`发送点击指令失败: ${chrome.runtime.lastError.message}. 确保内容脚本已注入且页面匹配。`);
             } else if (response) {
               if (response.success) {
-                logToPopup(`按钮 '${currentConfig.buttonSelector}' 点击成功 (来自内容脚本)。`);
+                logToPopup(`${buttonTypeText} '${selector}' 点击成功 (来自内容脚本)。`);
               } else {
-                logToPopup(`错误: 点击按钮 '${currentConfig.buttonSelector}' 失败: ${response.error} (来自内容脚本)。`);
+                logToPopup(`错误: 点击${buttonTypeText} '${selector}' 失败: ${response.error} (来自内容脚本)。`);
               }
             }
           }

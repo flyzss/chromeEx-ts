@@ -1,10 +1,12 @@
 import { defineConfig } from "vite";
 import { resolve } from "path";
 import { fileURLToPath } from "url";
+import vue from '@vitejs/plugin-vue';
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  plugins: [vue()],
   build: {
     // 生成 sourcemap 以便于调试
     sourcemap: false,

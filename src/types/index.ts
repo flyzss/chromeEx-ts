@@ -6,12 +6,21 @@
  */
 export interface Config {
   targetUrl: string;
+  // 旧字段（保留以兼容现有代码）
   buttonSelector: string;
+  timerInterval: number;
+  // 新字段：双按钮选择器
+  queryButtonSelector: string;
+  nextPageButtonSelector: string;
+  // 新字段：双定时器间隔
+  queryTimerInterval: number; // 分钟
+  nextPageTimerInterval: number; // 秒
+  // 其他字段
   listenUrl: string;
   submitUrl: string;
-  timerInterval: number;
   dataProcessingMethod: string;
   customScript: string;
+  extractField?: string; // 提取字段路径
 }
 
 /**
@@ -51,6 +60,7 @@ export interface ResponseData {
 export interface ClickButtonMessage {
   command: string;
   selector: string;
+  buttonType?: 'query' | 'nextPage'; // 按钮类型：查询按钮或下一页按钮
 }
 
 /**
