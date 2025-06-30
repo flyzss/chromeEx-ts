@@ -28,6 +28,20 @@ interface LogMessage {
   message: string;
 }
 
+// 定义捕获数据消息接口
+interface CapturedDataMessage {
+  command: string;
+  data: {
+    timestamp: string;
+    url: string;
+    method: string;
+    status: number;
+    contentType: string;
+    responseSize: string;
+    summary: string;
+  };
+}
+
 document.addEventListener('DOMContentLoaded', function () {
   // Consent-related DOM elements
   const consentArea = document.getElementById('consentArea') as HTMLDivElement;
@@ -55,6 +69,9 @@ document.addEventListener('DOMContentLoaded', function () {
   let logsContainer: HTMLElement | null = null;
   let extractFieldInput: HTMLInputElement | null = null;
   let extractFieldContainer: HTMLDivElement | null = null;
+  // XHR数据展示元素
+  let dataDisplayContainer: HTMLElement | null = null;
+  let capturedDataList: HTMLElement | null = null;
 
   /**
    * @description 初始化主应用程序的DOM元素
@@ -77,6 +94,44 @@ document.addEventListener('DOMContentLoaded', function () {
     logsContainer = document.querySelector('#mainApp .logs') as HTMLElement; // More specific selector
     extractFieldInput = document.getElementById('extractField') as HTMLInputElement;
     extractFieldContainer = document.getElementById('extractFieldContainer') as HTMLDivElement;
+    
+    // 初始化XHR数据展示元素
+    dataDisplayContainer = document.getElementById('dataDisplayContainer') as HTMLElement;
+    capturedDataList = document.getElementById('capturedDataList') as HTMLElement;
+    
+    // 如果元素不存在，创建它们
+    if (!dataDisplayContainer) {
+      const logsSection = document.querySelector('#mainApp .logs') as HTMLElement;
+      
+      dataDisplayContainer = document.createElement('div');
+      dataDisplayContainer.id = 'dataDisplayContainer';
+      dataDisplayContainer.className = 'data-display-container';
+      dataDisplayContainer.style.marginTop = '20px';
+      
+      const dataTitle = document.createElement('h3');
+      dataTitle.textContent = 'XHR捕获数据';
+      dataTitle.style.borderBottom = '1px solid #ddd';
+      dataTitle.style.paddingBottom = '8px';
+      
+      capturedDataList = document.createElement('div');
+      capturedDataList.id = 'capturedDataList';
+      capturedDataList.className = 'captured-data-list';
+      capturedDataList.style.maxHeight = '300px';
+      capturedDataList.style.overflowY = 'auto';
+      capturedDataList.style.border = '1px solid #eee';
+      capturedDataList.style.borderRadius = '4px';
+      capturedDataList.style.padding = '10px';
+      capturedDataList.style.backgroundColor = '#f9f9f9';
+      
+      dataDisplayContainer.appendChild(dataTitle);
+      dataDisplayContainer.appendChild(capturedDataList);
+      
+      if (logsSection && logsSection.parentNode) {
+        logsSection.parentNode.insertBefore(dataDisplayContainer, logsSection.nextSibling);
+      } else if (mainApp) {
+        mainApp.appendChild(dataDisplayContainer);
+      }
+    }
   }
 
   /**
@@ -327,6 +382,81 @@ document.addEventListener('DOMContentLoaded', function () {
       logsContainer.style.display = 'block';
     }
   }
+  
+  /**
+   * @description 更新XHR捕获数据显示
+   * @param {object} data - 捕获的数据对象
+   * @returns {void} 无返回值
+   */
+  function updateCapturedDataDisplay(data: CapturedDataMessage['data']): void {
+    if (!capturedDataList || !dataDisplayContainer) return; // Ensure DOM is ready
+    
+    // 创建数据项容器
+    const dataItem = document.createElement('div');
+    dataItem.className = 'data-item';
+    dataItem.style.marginBottom = '15px';
+    dataItem.style.padding = '10px';
+    dataItem.style.borderLeft = '4px solid #4e8df2';
+    dataItem.style.backgroundColor = '#f0f8ff';
+    dataItem.style.borderRadius = '0 4px 4px 0';
+    dataItem.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+    
+    // 时间
+    const timestampElem = document.createElement('div');
+    timestampElem.style.fontSize = '12px';
+    timestampElem.style.color = '#666';
+    timestampElem.textContent = new Date(data.timestamp).toLocaleString();
+    
+    // 请求信息
+    const requestInfo = document.createElement('div');
+    requestInfo.style.marginTop = '5px';
+    requestInfo.style.fontSize = '14px';
+    requestInfo.style.fontWeight = 'bold';
+    requestInfo.textContent = `${data.method} ${data.url.split('?')[0]} - ${data.status}`;  // 只显示URL的基础部分
+    
+    // 元数据
+    const metaInfo = document.createElement('div');
+    metaInfo.style.marginTop = '5px';
+    metaInfo.style.fontSize = '12px';
+    metaInfo.textContent = `类型: ${data.contentType} | 大小: ${data.responseSize}`;  
+    
+    // 摘要信息
+    const summaryInfo = document.createElement('pre');
+    summaryInfo.style.marginTop = '10px';
+    summaryInfo.style.padding = '8px';
+    summaryInfo.style.border = '1px dashed #ccc';
+    summaryInfo.style.borderRadius = '4px';
+    summaryInfo.style.backgroundColor = '#f9f9f9';
+    summaryInfo.style.fontSize = '12px';
+    summaryInfo.style.overflow = 'auto';
+    summaryInfo.style.maxHeight = '150px';
+    summaryInfo.style.fontFamily = 'monospace';
+    summaryInfo.textContent = data.summary;
+    
+    // 加入所有元素
+    dataItem.appendChild(timestampElem);
+    dataItem.appendChild(requestInfo);
+    dataItem.appendChild(metaInfo);
+    dataItem.appendChild(summaryInfo);
+    
+    // 加入到列表的最前面
+    if (capturedDataList.firstChild) {
+      capturedDataList.insertBefore(dataItem, capturedDataList.firstChild);
+    } else {
+      capturedDataList.appendChild(dataItem);
+    }
+    
+    // 显示容器
+    dataDisplayContainer.style.display = 'block';
+    
+    // 限制显示的条目数量，避免内存占用过大
+    const maxItems = 10;
+    while (capturedDataList.childElementCount > maxItems) {
+      if (capturedDataList.lastChild) {
+        capturedDataList.removeChild(capturedDataList.lastChild);
+      }
+    }
+  }
 
   /**
    * @description 监听来自background.js的消息
@@ -334,7 +464,7 @@ document.addEventListener('DOMContentLoaded', function () {
    * @param {Object} sender - 发送方信息
    * @param {Function} sendResponse - 回调函数
    */
-  chrome.runtime.onMessage.addListener(function (message: StatusMessage | LogMessage, sender, sendResponse) {
+  chrome.runtime.onMessage.addListener(function (message: StatusMessage | LogMessage | CapturedDataMessage, sender, sendResponse) {
     if (message.command === 'updateStatus') {
       const statusMsg = message as StatusMessage;
       if (statusDisplay && nextRunDisplay) {
@@ -349,6 +479,10 @@ document.addEventListener('DOMContentLoaded', function () {
     } else if (message.command === 'log') {
       const logMsg = message as LogMessage;
       updateLog(logMsg.message);
+    } else if (message.command === 'capturedData') {
+      const dataMsg = message as CapturedDataMessage;
+      updateLog(`收到数据: ${dataMsg.data.method} ${dataMsg.data.url} (状态码: ${dataMsg.data.status})`);
+      updateCapturedDataDisplay(dataMsg.data);
     }
   });
 });
