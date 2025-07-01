@@ -61,6 +61,7 @@ export interface ClickButtonMessage {
   command: string;
   selector: string;
   buttonType?: 'query' | 'nextPage'; // 按钮类型：查询按钮或下一页按钮
+  isXPath?: boolean; // 是否使用XPath选择器，默认为false，表示使用CSS选择器
 }
 
 /**

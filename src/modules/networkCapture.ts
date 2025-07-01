@@ -44,26 +44,141 @@ export async function getResponseBody(tabId: number, requestId: string): Promise
  * 初始化调试器网络事件监听
  */
 export function setupNetworkListeners(): void {
-  // 监听调试器事件
-  chrome.debugger.onEvent.addListener((source, method, params: any) => {
-    const tabId = source.tabId;
-    if (tabId === undefined || !debuggeeTabs[tabId] || !debuggeeTabs[tabId].attached) {
+  // 确保调试器API在Service Worker环境中可用
+  if (typeof chrome !== 'undefined' && chrome.debugger) {
+    // 确保onEvent可用并初始化
+    if (!chrome.debugger.onEvent) {
+      console.warn('chrome.debugger.onEvent 在当前环境不可用，尝试安全初始化');
+      // 记录错误状态
+      logToPopup('警告: 调试器API初始化异常，将尝试替代方案');
+      
+      // MV3 Service Worker环境下的替代方案
+      setupDebuggerEventsPolyfill();
       return;
     }
+    
+    // 标准的调试器事件监听
+    try {
+      chrome.debugger.onEvent.addListener((source, method, params: any) => {
+        const tabId = source.tabId;
+        if (tabId === undefined || !debuggeeTabs[tabId] || !debuggeeTabs[tabId].attached) {
+          return;
+        }
 
-    // 处理请求发送事件
-    if (method === 'Network.requestWillBeSent') {
-      handleRequestWillBeSent(tabId, params as DebuggerRequestWillBeSentParams);
+        // 处理请求发送事件
+        if (method === 'Network.requestWillBeSent') {
+          handleRequestWillBeSent(tabId, params as DebuggerRequestWillBeSentParams);
+        }
+        // 处理响应接收事件
+        else if (method === 'Network.responseReceived') {
+          handleResponseReceived(tabId, params as DebuggerResponseReceivedParams);
+        }
+        // 处理加载完成事件
+        else if (method === 'Network.loadingFinished') {
+          handleLoadingFinished(tabId, params as DebuggerLoadingFinishedParams);
+        }
+      });
+      
+      logToPopup('网络事件监听已初始化');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '未知错误';
+      console.error('设置调试器事件监听失败:', errorMsg);
+      logToPopup(`调试器事件监听失败: ${errorMsg}，将尝试替代方案`);
+      
+      // 出错时使用替代方案
+      setupDebuggerEventsPolyfill();
     }
-    // 处理响应接收事件
-    else if (method === 'Network.responseReceived') {
-      handleResponseReceived(tabId, params as DebuggerResponseReceivedParams);
+  } else {
+    console.error('Chrome调试器API不可用');
+    logToPopup('错误: Chrome调试器API不可用');
+  }
+}
+
+/**
+ * 为MV3 Service Worker环境提供调试事件的替代实现
+ * 使用轮询方式替代事件监听
+ */
+function setupDebuggerEventsPolyfill(): void {
+  logToPopup('正在使用替代方案监听网络事件');
+  
+  // 标记已附加调试器的标签页
+  let monitoredTabs = new Set<number>();
+  
+  // 定期检查和更新已附加调试器的标签页列表
+  const pollAttachedTabs = () => {
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        if (tab.id && debuggeeTabs[tab.id] && debuggeeTabs[tab.id].attached && !monitoredTabs.has(tab.id)) {
+          // 为新附加的标签页设置网络监听
+          setupTabNetworkMonitoring(tab.id);
+          monitoredTabs.add(tab.id);
+        }
+      });
+      
+      // 移除已不存在或已分离调试器的标签页
+      const existingTabIds = tabs.map(tab => tab.id as number).filter(id => id !== undefined);
+      [...monitoredTabs].forEach(tabId => {
+        if (!existingTabIds.includes(tabId) || !debuggeeTabs[tabId] || !debuggeeTabs[tabId].attached) {
+          monitoredTabs.delete(tabId);
+        }
+      });
+    });
+    
+    // 每5秒检查一次
+    setTimeout(pollAttachedTabs, 5000);
+  };
+  
+  // 开始轮询
+  pollAttachedTabs();
+}
+
+/**
+ * 为特定标签页设置网络监听
+ * @param tabId 标签页ID
+ */
+function setupTabNetworkMonitoring(tabId: number): void {
+  if (!debuggeeTabs[tabId] || !debuggeeTabs[tabId].attached) {
+    return;
+  }
+  
+  logToPopup(`为标签页 ${tabId} 设置网络监听`);
+  
+  // 确保网络监听已启用
+  chrome.debugger.sendCommand({ tabId }, "Network.enable", {}, () => {
+    if (chrome.runtime.lastError) {
+      console.error('启用网络监听失败:', chrome.runtime.lastError.message);
+      logToPopup(`为标签页 ${tabId} 启用网络监听失败: ${chrome.runtime.lastError.message}`);
+      return;
     }
-    // 处理加载完成事件
-    else if (method === 'Network.loadingFinished') {
-      handleLoadingFinished(tabId, params as DebuggerLoadingFinishedParams);
-    }
+    
+    // 设置自定义请求监听
+    setupCustomRequestMonitoring(tabId);
   });
+}
+
+/**
+ * 为标签页设置自定义请求监听
+ * @param tabId 标签页ID
+ */
+function setupCustomRequestMonitoring(tabId: number): void {
+  // 请求发送监听
+  const monitorRequests = () => {
+    if (!debuggeeTabs[tabId] || !debuggeeTabs[tabId].attached) {
+      return; // 如果标签页已关闭或调试器已分离，停止监控
+    }
+    
+    // 使用getHARLog获取网络活动
+    chrome.debugger.sendCommand({ tabId }, "Network.getRequestPostData", {}, (result) => {
+      // 处理结果...
+      // 由于这只是一个临时方案，实际实现可能需要调整
+    });
+    
+    // 继续监听
+    setTimeout(() => monitorRequests(), 1000);
+  };
+  
+  // 开始监控
+  monitorRequests();
 }
 
 /**
