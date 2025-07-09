@@ -87,4 +87,6 @@ export interface RequestData {
   contentType?: string;
   tabId?: number;
   headers?: Record<string, string>;
+  // 标记响应体是否已经准备就绪，用于解决时序问题
+  responseBodyReady?: boolean;
 }

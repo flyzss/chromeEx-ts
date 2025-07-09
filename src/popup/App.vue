@@ -37,6 +37,12 @@
       </div>
 
       <div class="form-group">
+        <label for="iframeSelector">iframe选择器 (可选):</label>
+        <input type="text" id="iframeSelector" v-model="config.iframeSelector" placeholder="例如: #main-iframe 或 iframe[name='content']" />
+        <small>如果目标元素在iframe中，请指定iframe选择器，留空则在主页面查找</small>
+      </div>
+
+      <div class="form-group">
         <label for="nextPageButtonSelector">下一页按钮选择器 (必填):</label>
         <input type="text" id="nextPageButtonSelector" v-model="config.nextPageButtonSelector" placeholder="例如: #next-page-button 或 button.next-btn" />
       </div>
@@ -111,6 +117,7 @@ interface Config {
   targetUrl: string;
   queryButtonSelector: string;
   nextPageButtonSelector: string;
+  iframeSelector: string; // iframe选择器，留空则在主页面查找元素
   queryTimerInterval: number; // 分钟为单位
   nextPageTimerInterval: number; // 秒为单位
   listenUrl: string;
@@ -155,6 +162,7 @@ export default defineComponent({
       targetUrl: '',
       queryButtonSelector: '',
       nextPageButtonSelector: '',
+      iframeSelector: '', // iframe选择器初始值为空，表示在主页面查询
       queryTimerInterval: 20, // 默认20分钟查询一次
       nextPageTimerInterval: 10, // 默认每10秒翻页一次
       listenUrl: '',

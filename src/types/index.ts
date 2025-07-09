@@ -12,6 +12,8 @@ export interface Config {
   // 新字段：双按钮选择器
   queryButtonSelector: string;
   nextPageButtonSelector: string;
+  // iframe选择器，用于在iframe中查找元素
+  iframeSelector?: string;
   // 新字段：双定时器间隔
   queryTimerInterval: number; // 分钟
   nextPageTimerInterval: number; // 秒
@@ -62,6 +64,7 @@ export interface ClickButtonMessage {
   selector: string;
   buttonType?: 'query' | 'nextPage'; // 按钮类型：查询按钮或下一页按钮
   isXPath?: boolean; // 是否使用XPath选择器，默认为false，表示使用CSS选择器
+  iframeSelector?: string; // iframe选择器，指定要在哪个iframe中查找元素
 }
 
 /**

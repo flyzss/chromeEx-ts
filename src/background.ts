@@ -28,6 +28,39 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   handleTabClose(tabId);
 });
 
+/**
+ * 带重试机制的消息发送函数
+ * @param tabId 目标标签页ID
+ * @param message 要发送的消息
+ * @param maxRetries 最大重试次数
+ * @param retryDelay 重试间隔(毫秒)
+ * @returns Promise包含响应或错误
+ */
+function sendMessageWithRetry(tabId: number, message: any, maxRetries: number = 2, retryDelay: number = 500): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    
+    function attemptSend() {
+      attempts++;
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        if (chrome.runtime.lastError) {
+          console.log(`[调试] 发送消息尝试 ${attempts}/${maxRetries} 失败: ${chrome.runtime.lastError.message}`);
+          if (attempts < maxRetries) {
+            // 延迟后重试
+            setTimeout(attemptSend, retryDelay);
+          } else {
+            reject(new Error(chrome.runtime.lastError.message));
+          }
+        } else {
+          resolve(response);
+        }
+      });
+    }
+    
+    attemptSend();
+  });
+}
+
 // 监听定时器触发事件
 chrome.alarms.onAlarm.addListener((alarm) => {
   console.log(`[定时器触发] 名称: ${alarm.name}`);
@@ -49,6 +82,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       const querySelector = config.querySelector || config.queryButtonSelector || config.buttonSelector;
       console.log(`[检查配置] 查询按钮选择器:`, querySelector);
       
+      // 获取iframe选择器
+      const iframeSelector = config.iframeSelector || '';
+      console.log(`[检查配置] iframe选择器:`, iframeSelector);
+      
       if (!querySelector) {
         logToPopup('未配置查询按钮选择器，无法点击');
         return;
@@ -65,24 +102,75 @@ chrome.alarms.onAlarm.addListener((alarm) => {
             selector: querySelector,
             buttonType: 'query',
             // 检测是否为XPath选择器（以'/'开头视为XPath）
-            isXPath: querySelector && querySelector.trim().startsWith('/')
+            isXPath: querySelector && querySelector.trim().startsWith('/'),
+            // 添加iframe选择器
+            iframeSelector: iframeSelector
           };
           
-          // 向content script发送消息
-          chrome.tabs.sendMessage(tabId, clickMessage, (response) => {
-            if (chrome.runtime.lastError) {
-              logToPopup(`发送点击消息失败: ${chrome.runtime.lastError.message}`);
-              return;
-            }
-            
-            if (response && response.success) {
-              logToPopup('查询按钮点击成功');
-            } else if (response) {
-              logToPopup(`查询按钮点击失败: ${response.error || '未知原因'}`);
-            } else {
-              logToPopup('点击消息已发送，但未收到响应');
-            }
-          });
+          // 检查content script是否注入并尝试发送消息，带重试机制
+          sendMessageWithRetry(tabId, clickMessage)
+            .then(response => {
+              if (response && response.success) {
+                logToPopup('查询按钮点击成功');
+              } else if (response) {
+                logToPopup(`查询按钮点击失败: ${response.error || '未知原因'}`);
+              } else {
+                logToPopup('点击消息已发送，但未收到响应');
+              }
+            })
+            .catch(error => {
+              logToPopup(`发送点击消息失败: ${error.message}`);
+              
+              // 如果是消息通道错误，尝试重新注入content script
+              if (error.message.includes('Receiving end does not exist')) {
+                logToPopup('尝试重新注入content script...');
+                
+                // 使用scripting API尝试执行脚本确保content script已加载
+                chrome.scripting.executeScript(
+                  {
+                    target: { tabId },
+                    func: () => {
+                      // 检测是否已加载content script
+                      return typeof window.contentScriptLoaded !== 'undefined';
+                    }
+                  },
+                  (injectionResults) => {
+                    if (chrome.runtime.lastError) {
+                      logToPopup(`检查content script失败: ${chrome.runtime.lastError.message}`);
+                      return;
+                    }
+                    
+                    const isLoaded = injectionResults && injectionResults[0] && injectionResults[0].result;
+                    
+                    if (!isLoaded) {
+                      logToPopup('Content script未加载，尝试打开新标签页并重新执行操作');
+                      
+                      // 如果需要，可以打开新标签页或刷新当前页面
+                      // 这里暂时不自动操作，只提示用户
+                      
+                      // 当需要时新增重新加载content script的逻辑
+                    } else {
+                      logToPopup('Content script已加载，重新尝试发送消息');
+                      
+                      // 尝试再次发送消息
+                      setTimeout(() => {
+                        sendMessageWithRetry(tabId, clickMessage, 1)
+                          .then(retryResponse => {
+                            if (retryResponse && retryResponse.success) {
+                              logToPopup('重试成功: 查询按钮点击成功');
+                            } else {
+                              logToPopup('重试失败: 仍然无法点击查询按钮');
+                            }
+                          })
+                          .catch(() => {
+                            logToPopup('重试失败: 仍然无法建立消息通道');
+                          });
+                      }, 500);
+                    }
+                  }
+                );
+              }
+            });
         } else {
           logToPopup('无法获取当前活动标签页');
         }
@@ -96,6 +184,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       // 兼容多种字段命名
       const nextPageSelector = config.nextPageSelector || config.nextPageButtonSelector;
       console.log(`[检查配置] 下一页按钮选择器:`, nextPageSelector);
+      
+      // 获取iframe选择器
+      const iframeSelector = config.iframeSelector || '';
+      console.log(`[检查配置] iframe选择器:`, iframeSelector);
       
       if (!nextPageSelector) {
         logToPopup('未配置下一页按钮选择器，无法点击');
@@ -113,7 +205,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
             selector: nextPageSelector,
             buttonType: 'nextPage',
             // 检测是否为XPath选择器（以'/'开头视为XPath）
-            isXPath: nextPageSelector && nextPageSelector.trim().startsWith('/')
+            isXPath: nextPageSelector && nextPageSelector.trim().startsWith('/'),
+            // 添加iframe选择器
+            iframeSelector: iframeSelector
           };
           
           // 向content script发送消息

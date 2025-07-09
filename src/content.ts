@@ -2,6 +2,10 @@
 // 该脚本在匹配的网页上下文中运行，负责与页面DOM交互和网络请求监听。
 // 重构版本：使用模块化结构提高可读性和可维护性
 
+// 设置全局标记，表示content script已加载
+window.contentScriptLoaded = true;
+console.log('[ST Extension] Content script已加载')
+
 import { setupFetchHook } from './content/modules/fetchHook';
 import { setupXhrHook } from './content/modules/xhrHook';
 import { setupMessageListener, getConfigFromBackground } from './content/modules/messageManager';
